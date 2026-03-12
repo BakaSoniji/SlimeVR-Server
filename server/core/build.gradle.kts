@@ -85,7 +85,7 @@ dependencies {
 	implementation(kotlin("reflect"))
 
 	// Jitpack
-	implementation("com.github.SlimeVR:oscquery-kt:566a0cba58")
+	implementation("com.github.BakaSoniji.oscquery-kt:oscquery-kt-jvm:v2026.3.1.bakasoniji-upgrade-jmdns")
 
 	testImplementation(kotlin("test"))
 	// Use JUnit test framework
