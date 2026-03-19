@@ -11,6 +11,7 @@ import io.eiren.util.logging.LogManager
 import java.io.IOException
 import java.net.DatagramSocket
 import java.net.Inet4Address
+import java.net.NetworkInterface
 import kotlin.concurrent.thread
 
 private const val serviceStartsWith = "VRChat-Client"
@@ -41,6 +42,17 @@ class VRCOSCQueryHandler(
 		LogManager.info("[VRCOSCQueryHandler] SlimeVR OSCQueryServer started at http://$localIp:$httpPort")
 
 		try {
+			// Set up browse addresses for all usable interfaces
+			val browseAddresses = NetworkInterface.getNetworkInterfaces().asSequence()
+				.filter { it.isUp && !it.isLoopback && !it.isVirtual }
+				.flatMap { it.inetAddresses.asSequence() }
+				.filter { it.isSiteLocalAddress && it is Inet4Address }
+				.toList()
+			if (browseAddresses.isNotEmpty()) {
+				oscQueryServer.setBrowseAddresses(browseAddresses)
+				LogManager.info("[VRCOSCQueryHandler] Browsing on ${browseAddresses.joinToString { it.hostAddress }}")
+			}
+
 			// Listen for VRChat's OSCQuery service via _oscjson._tcp
 			LogManager.info("[VRCOSCQueryHandler] Listening for VRChat OSCQuery (_oscjson._tcp)")
 			oscQueryServer.service.addServiceListener(
