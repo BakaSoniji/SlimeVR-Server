@@ -85,7 +85,7 @@ dependencies {
 	implementation(kotlin("reflect"))
 
 	// oscquery-kt (local composite build substitutes this when ../oscquery-kt exists)
-	implementation("com.github.BakaSoniji.oscquery-kt:oscquery-kt-jvm:v2026.3.2.bakasoniji-oscquery-mdns-fixes")
+	implementation("com.github.BakaSoniji.oscquery-kt:oscquery-kt-jvm:v2026.3.3.bakasoniji-oscquery-mdns-fixes")
 
 	testImplementation(kotlin("test"))
 	// Use JUnit test framework
