@@ -32,6 +32,16 @@ pluginManagement {
 	}
 }
 
+// Use local oscquery-kt if available, otherwise fall back to Jitpack
+val oscqueryKtDir = file("../oscquery-kt")
+if (oscqueryKtDir.exists()) {
+	includeBuild(oscqueryKtDir) {
+		dependencySubstitution {
+			substitute(module("com.github.BakaSoniji.oscquery-kt:oscquery-kt-jvm")).using(project(":"))
+		}
+	}
+}
+
 include(":solarxr-protocol")
 project(":solarxr-protocol").projectDir = File("solarxr-protocol/protocol/java")
 

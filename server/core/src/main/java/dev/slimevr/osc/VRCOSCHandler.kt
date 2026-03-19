@@ -420,7 +420,8 @@ class VRCOSCHandler(
 		val currentTime = System.currentTimeMillis().toFloat()
 
 		// Send OSC data
-		if (oscSender != null && oscSender!!.isConnected) {
+		val hasSender = oscSender?.isConnected == true || oscQuerySender?.isConnected == true
+		if (hasSender) {
 			// Create new bundle
 			val bundle = OSCBundle()
 
@@ -482,8 +483,8 @@ class VRCOSCHandler(
 			}
 
 			try {
-				oscSender?.send(bundle)
-				oscQuerySender?.send(bundle)
+				oscSender?.let { if (it.isConnected) it.send(bundle) }
+				oscQuerySender?.let { if (it.isConnected) it.send(bundle) }
 			} catch (e: IOException) {
 				// Avoid spamming AsynchronousCloseException too many
 				// times per second
@@ -525,7 +526,7 @@ class VRCOSCHandler(
 	 * Sends the expected HMD rotation upon reset to align the trackers in VRC
 	 */
 	fun yawAlign(headRot: Quaternion) {
-		if (oscSender != null && oscSender!!.isConnected) {
+		if (oscSender?.isConnected == true || oscQuerySender?.isConnected == true) {
 			val (_, _, y, _) = headRot.toEulerAngles(EulerOrder.YXZ)
 			oscArgs.clear()
 			oscArgs.add(0f)

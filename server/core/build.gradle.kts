@@ -84,8 +84,8 @@ dependencies {
 	// Allow the use of reflection
 	implementation(kotlin("reflect"))
 
-	// Jitpack
-	implementation("com.github.SlimeVR:oscquery-kt:566a0cba58")
+	// oscquery-kt (local composite build substitutes this when ../oscquery-kt exists)
+	implementation("com.github.BakaSoniji.oscquery-kt:oscquery-kt-jvm:v2026.3.2.bakasoniji-oscquery-mdns-fixes")
 
 	testImplementation(kotlin("test"))
 	// Use JUnit test framework
