@@ -12,7 +12,6 @@ import com.jme3.math.FastMath
 import com.jme3.system.NanoTimer
 import dev.slimevr.VRServer
 import dev.slimevr.config.VRCOSCConfig
-import dev.slimevr.protocol.rpc.setup.RPCUtil
 import dev.slimevr.tracking.trackers.Device
 import dev.slimevr.tracking.trackers.Tracker
 import dev.slimevr.tracking.trackers.TrackerPosition
@@ -26,6 +25,7 @@ import io.github.axisangles.ktmath.Vector3
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 
 private const val OFFSET_SLERP_FACTOR = 0.5f // Guessed from eyeing VRChat
 
@@ -37,8 +37,22 @@ class VRCOSCHandler(
 	private val config: VRCOSCConfig,
 	private val computedTrackers: List<Tracker>,
 ) : OSCHandler {
-	private val localIp = RPCUtil.getLocalIp()
-	private val loopbackIp = InetAddress.getLoopbackAddress().hostAddress
+	/**
+	 * Checks if two IP strings resolve to the same destination.
+	 * Handles cases like "127.0.0.1" vs "localhost", or different string
+	 * representations of the same address. Also treats loopback and any
+	 * local interface address as equivalent (same machine).
+	 */
+	private fun isSameDestination(ip1: String, ip2: String): Boolean {
+		if (ip1 == ip2) return true
+		val addr1 = try { InetAddress.getByName(ip1) } catch (_: Exception) { return false }
+		val addr2 = try { InetAddress.getByName(ip2) } catch (_: Exception) { return false }
+		if (addr1 == addr2) return true
+		// Treat loopback and local interface addresses as the same machine
+		val local1 = addr1.isLoopbackAddress || NetworkInterface.getByInetAddress(addr1) != null
+		val local2 = addr2.isLoopbackAddress || NetworkInterface.getByInetAddress(addr2) != null
+		return local1 && local2
+	}
 	private val vrsystemTrackersAddresses = arrayOf(
 		"/tracking/vrsystem/head/pose",
 		"/tracking/vrsystem/leftwrist/pose",
@@ -49,8 +63,8 @@ class VRCOSCHandler(
 		"/tracking/trackers/*/rotation",
 	)
 	private var oscReceiver: OSCPortIn? = null
-	private var oscSender: OSCPortOut? = null
-	private var oscQuerySender: OSCPortOut? = null
+	private var manualOscSender: OSCPortOut? = null
+	private var discoveredOscSender: OSCPortOut? = null
 	private var oscMessage: OSCMessage? = null
 	private var headTracker: Tracker? = null
 	private var oscTrackersDevice: Device? = null
@@ -60,9 +74,10 @@ class VRCOSCHandler(
 	private var oscPortIn = 0
 	private var oscPortOut = 0
 	private var oscIp: InetAddress? = null
-	private var oscQuerySenderState = false
-	private var oscQueryPortOut = 0
-	private var oscQueryIp: String? = null
+	/** Whether OSCQuery has discovered a VRChat service (persists across dedup closures) */
+	private var oscQueryDiscovered = false
+	private var discoveredPortOut = 0
+	private var discoveredIp: String? = null
 	private var timeAtLastError: Long = 0
 	private var receivingPositionOffset = Vector3.NULL
 	private var postReceivingPositionOffset = Vector3.NULL
@@ -111,37 +126,39 @@ class VRCOSCHandler(
 	}
 
 	/**
-	 * Adds an OSC Sender from OSCQuery
+	 * Adds an OSC sender for an auto-discovered VRChat service.
+	 * Skips creating a duplicate socket if the manual sender already targets the same destination.
 	 */
-	fun addOSCQuerySender(oscPortOut: Int, oscIP: String) {
-		val addr = InetAddress.getByName(oscIP)
-		oscQuerySenderState = true
-		oscQueryIp = oscIP
-		oscQueryPortOut = oscPortOut
-		if (oscPortOut != portOut || (oscIP != address.hostName && !(oscIP == localIp && address.hostName == loopbackIp))) {
-			try {
-				oscQuerySender = OSCPortOut(InetSocketAddress(addr, oscPortOut))
-				oscQuerySender?.connect()
-				LogManager.info("[VRCOSCHandler] OSCQuery sender sending to port $oscPortOut at address $oscIP")
-			} catch (e: IOException) {
-				LogManager.severe("[VRCOSCHandler] Error connecting to port $oscPortOut at the address $oscIP: $e")
-			}
+	fun addDiscoveredSender(oscPortOut: Int, oscIP: String) {
+		oscQueryDiscovered = true
+		discoveredIp = oscIP
+		discoveredPortOut = oscPortOut
+		// Skip if the manual sender already covers this destination
+		if (oscPortOut == portOut && isSameDestination(oscIP, address.hostName)) return
+		try {
+			discoveredOscSender = OSCPortOut(InetSocketAddress(InetAddress.getByName(oscIP), oscPortOut))
+			discoveredOscSender?.connect()
+			LogManager.info("[VRCOSCHandler] Discovered sender sending to port $oscPortOut at address $oscIP")
+		} catch (e: IOException) {
+			LogManager.severe("[VRCOSCHandler] Error connecting to port $oscPortOut at the address $oscIP: $e")
 		}
 	}
 
 	/**
-	 * Close/remove the osc query sender
+	 * Closes the auto-discovered OSC sender.
+	 * @param keepDiscovered true if closed for dedup (manual sender covers it),
+	 *                       false if VRChat service actually disappeared
 	 */
-	fun closeOscQuerySender(newState: Boolean) {
-		oscQuerySender?.let {
+	fun closeDiscoveredSender(keepDiscovered: Boolean) {
+		discoveredOscSender?.let {
 			try {
 				it.close()
-				oscQuerySender = null
-				oscQuerySenderState = newState
 			} catch (e: IOException) {
-				LogManager.severe("[VRCOSCHandler] Error closing the OSC sender: $e")
+				LogManager.severe("[VRCOSCHandler] Error closing the discovered sender: $e")
 			}
+			discoveredOscSender = null
 		}
+		oscQueryDiscovered = keepDiscovered
 	}
 
 	override fun updateOscReceiver(portIn: Int, args: Array<String>) {
@@ -185,42 +202,40 @@ class VRCOSCHandler(
 
 	override fun updateOscSender(portOut: Int, ip: String) {
 		// Stop sending
-		val wasConnected = oscSender != null && oscSender!!.isConnected
+		val wasConnected = manualOscSender != null && manualOscSender!!.isConnected
 		if (wasConnected) {
 			try {
-				oscSender!!.close()
+				manualOscSender!!.close()
 			} catch (e: IOException) {
 				LogManager.severe("[VRCOSCHandler] Error closing the OSC sender: $e")
 			}
 		}
 
 		if (config.enabled) {
-			// Instantiate the OSC sender
+			// Instantiate the manual OSC sender
 			try {
 				val addr = InetAddress.getByName(ip)
-				oscSender = OSCPortOut(InetSocketAddress(addr, portOut))
-				if (oscPortOut != portOut && oscIp != addr || !wasConnected) {
+				manualOscSender = OSCPortOut(InetSocketAddress(addr, portOut))
+				if (oscPortOut != portOut || oscIp != addr || !wasConnected) {
 					LogManager.info("[VRCOSCHandler] Sending to port $portOut at address $ip")
 				}
 				oscPortOut = portOut
 				oscIp = addr
-				oscSender?.connect()
+				manualOscSender?.connect()
 			} catch (e: IOException) {
-				LogManager
-					.severe(
-						"[VRCOSCHandler] Error connecting to port $portOut at the address $ip: $e",
-					)
+				LogManager.severe("[VRCOSCHandler] Error connecting to port $portOut at the address $ip: $e")
 				return
 			}
 
-			if (oscQueryPortOut == portOut && (oscQueryIp == ip || (oscQueryIp == localIp && ip == loopbackIp))) {
-				if (oscQuerySender != null) {
-					// Close the oscQuerySender if it has the same port/ip
-					closeOscQuerySender(true)
+			// Reconcile discovered sender with the new manual target
+			if (oscQueryDiscovered) {
+				if (discoveredPortOut == portOut && isSameDestination(discoveredIp ?: "", ip)) {
+					// Manual sender now covers the same destination — close the duplicate
+					if (discoveredOscSender != null) closeDiscoveredSender(true)
+				} else if (discoveredOscSender == null) {
+					// Manual target moved away — recreate the discovered sender
+					addDiscoveredSender(discoveredPortOut, discoveredIp!!)
 				}
-			} else if (oscQuerySender == null && oscQuerySenderState) {
-				// Instantiate the oscQuerySender if it could not be instantiated.
-				addOSCQuerySender(oscQueryPortOut, oscQueryIp!!)
 			}
 		}
 	}
@@ -420,7 +435,7 @@ class VRCOSCHandler(
 		val currentTime = System.currentTimeMillis().toFloat()
 
 		// Send OSC data
-		val hasSender = oscSender?.isConnected == true || oscQuerySender?.isConnected == true
+		val hasSender = manualOscSender?.isConnected == true || discoveredOscSender?.isConnected == true
 		if (hasSender) {
 			// Create new bundle
 			val bundle = OSCBundle()
@@ -483,8 +498,8 @@ class VRCOSCHandler(
 			}
 
 			try {
-				oscSender?.let { if (it.isConnected) it.send(bundle) }
-				oscQuerySender?.let { if (it.isConnected) it.send(bundle) }
+				manualOscSender?.let { if (it.isConnected) it.send(bundle) }
+				discoveredOscSender?.let { if (it.isConnected) it.send(bundle) }
 			} catch (e: IOException) {
 				// Avoid spamming AsynchronousCloseException too many
 				// times per second
@@ -526,7 +541,7 @@ class VRCOSCHandler(
 	 * Sends the expected HMD rotation upon reset to align the trackers in VRC
 	 */
 	fun yawAlign(headRot: Quaternion) {
-		if (oscSender?.isConnected == true || oscQuerySender?.isConnected == true) {
+		if (manualOscSender?.isConnected == true || discoveredOscSender?.isConnected == true) {
 			val (_, _, y, _) = headRot.toEulerAngles(EulerOrder.YXZ)
 			oscArgs.clear()
 			oscArgs.add(0f)
@@ -537,8 +552,8 @@ class VRCOSCHandler(
 				oscArgs,
 			)
 			try {
-				oscSender?.send(oscMessage)
-				oscQuerySender?.send(oscMessage)
+				manualOscSender?.send(oscMessage)
+				discoveredOscSender?.send(oscMessage)
 			} catch (e: IOException) {
 				LogManager
 					.warning("[VRCOSCHandler] Error sending OSC message to VRChat: $e")
@@ -549,7 +564,7 @@ class VRCOSCHandler(
 		}
 	}
 
-	override fun getOscSender(): OSCPortOut = oscSender!!
+	override fun getOscSender(): OSCPortOut = manualOscSender!!
 
 	override fun getPortOut(): Int = oscPortOut
 

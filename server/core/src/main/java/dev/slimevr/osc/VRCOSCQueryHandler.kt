@@ -1,5 +1,7 @@
 package dev.slimevr.osc
 
+import dev.slimevr.oscquery.Extension
+import dev.slimevr.oscquery.HostInfo
 import dev.slimevr.oscquery.OSCQueryNode
 import dev.slimevr.oscquery.OSCQueryServer
 import dev.slimevr.oscquery.OscTransport
@@ -119,13 +121,21 @@ class VRCOSCQueryHandler(
 				}
 
 				// Publish SlimeVR's mDNS records on the correct interface
+				// and update HOST_INFO so remote clients see the correct OSC_IP
 				if (localAddress != null && !localAddress.isAnyLocalAddress) {
 					oscQueryServer.setPublishAddress(localAddress)
+					oscQueryServer.hostInfo = HostInfo(
+						name = oscQueryServer.name,
+						oscIp = localAddress.hostAddress,
+						oscPort = oscQueryServer.oscPort,
+						oscTransport = oscQueryServer.transport,
+						extensions = mapOf(Extension.VALUE.name to true),
+					)
 					LogManager.info("[VRCOSCQueryHandler] Publishing mDNS on interface ${localAddress.hostAddress}")
 				}
 
 				// Create OSC sender to VRChat using mDNS IP + HOST_INFO port
-				vrcOscHandler.addOSCQuerySender(oscPort, ipString)
+				vrcOscHandler.addDiscoveredSender(oscPort, ipString)
 			} catch (e: Exception) {
 				LogManager.warning("[VRCOSCQueryHandler] Failed to connect to VRChat OSCQuery at $ipString:$httpPort: $e")
 			}
@@ -138,14 +148,14 @@ class VRCOSCQueryHandler(
 	private fun serviceRemoved(type: String, name: String) {
 		if (!name.startsWith(serviceStartsWith)) return
 		LogManager.info("[VRCOSCQueryHandler] VRChat OSCQuery service removed: $name")
-		vrcOscHandler.closeOscQuerySender(false)
+		vrcOscHandler.closeDiscoveredSender(false)
 	}
 
 	/**
 	 * Closes the OSCQueryServer and the associated OSC sender.
 	 */
 	fun close() {
-		vrcOscHandler.closeOscQuerySender(false)
+		vrcOscHandler.closeDiscoveredSender(false)
 		thread(start = true) {
 			oscQueryServer.close()
 		}
