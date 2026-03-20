@@ -45,8 +45,16 @@ class VRCOSCHandler(
 	 */
 	private fun isSameDestination(ip1: String, ip2: String): Boolean {
 		if (ip1 == ip2) return true
-		val addr1 = try { InetAddress.getByName(ip1) } catch (_: Exception) { return false }
-		val addr2 = try { InetAddress.getByName(ip2) } catch (_: Exception) { return false }
+		val addr1 = try {
+			InetAddress.getByName(ip1)
+		} catch (_: Exception) {
+			return false
+		}
+		val addr2 = try {
+			InetAddress.getByName(ip2)
+		} catch (_: Exception) {
+			return false
+		}
 		if (addr1 == addr2) return true
 		// Treat loopback and local interface addresses as the same machine
 		val local1 = addr1.isLoopbackAddress || NetworkInterface.getByInetAddress(addr1) != null
@@ -74,6 +82,7 @@ class VRCOSCHandler(
 	private var oscPortIn = 0
 	private var oscPortOut = 0
 	private var oscIp: InetAddress? = null
+
 	/** Whether OSCQuery has discovered a VRChat service (persists across dedup closures) */
 	private var oscQueryDiscovered = false
 	private var discoveredPortOut = 0
